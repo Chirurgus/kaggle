@@ -116,7 +116,9 @@ mutate_boston <- . %>% mutate(
             HeatingQC == "Fa" ~ 2,
             HeatingQC == "Po" ~ 1,
         ),
-        Heating = fct_lump_n(Heating, 1)
+        Heating = fct_lump_n(Heating, 1),
+        outlier = SalePrice > 6e5 | `1stFlrSF` > 2500 |
+            TotalBsmtSF > 3000 | LotArea > 50e3
     )
 
 data_zip <- "data/house-prices-advanced-regression-techniques.zip"
@@ -162,7 +164,7 @@ m1 <- glm(
         LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 +
         BldgType + HouseStyle + ns(OverallQual, 5) + ns(OverallCond, 3) +
         ns(YearBuilt, 5) +
-        YearRemodAdd + RoofStyle + RoofMatl + Exterior1st + Exterior2nd +
+        YearRemodAdd + RoofStyle + Exterior1st + Exterior2nd +
         ExterQual + ExterCond + Foundation + BsmtFinSF1 + BsmtFinSF2 +
         BsmtUnfSF + TotalBsmtSF + Heating + HeatingQC + CentralAir +
         `1stFlrSF` + `2ndFlrSF` + LowQualFinSF +
@@ -175,9 +177,9 @@ m1 <- glm(
         YrSold + SaleType + SaleCondition + Alley,
     Gamma(link = log),
     data = boston,
-    subset = !(SalePrice > 6e5 | `1stFlrSF` > 2500 |
-                TotalBsmtSF > 3000 | LotArea > 50e3)
+    subset = !outlier
 )
+
 summary(m1)
 ```
 
@@ -199,7 +201,7 @@ better with some non-linearities.
 
 ```{r}
 test_res <- boston_test %>%
-    filter(!RoofMatl %in% c("ClyTile", "Metal"), !HeatingQC %in% "Po") %>%
+    filter(!outlier) %>%
     mutate(
         SalePrice_pred = predict(m1, ., type = "response"),
         err_base = SalePrice - mean(boston$SalePrice),
@@ -236,7 +238,35 @@ test_res %>%
     geom_hline(yintercept = 0)
 ```
 
+A quick comparaison of results relative to outliers
+```{r}
+m1_with_out <- glm(
+    SalePrice ~ MSSubClass + MSZoning +
+        ns(LotArea, 5) + LotShape + LandContour +
+        LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 +
+        BldgType + HouseStyle + ns(OverallQual, 5) + ns(OverallCond, 3) +
+        ns(YearBuilt, 5) +
+        YearRemodAdd + RoofStyle + Exterior1st + Exterior2nd +
+        ExterQual + ExterCond + Foundation + BsmtFinSF1 + BsmtFinSF2 +
+        BsmtUnfSF + TotalBsmtSF + Heating + HeatingQC + CentralAir +
+        `1stFlrSF` + `2ndFlrSF` + LowQualFinSF +
+        ns(GrLivArea, 5) + BsmtFullBath +
+        BsmtHalfBath + FullBath + HalfBath + BedroomAbvGr + KitchenAbvGr +
+        KitchenQual + TotRmsAbvGrd + Functional + Fireplaces + GarageType +
+        GarageCars + ns(GarageArea, 5) +
+        PavedDrive + WoodDeckSF + OpenPorchSF +
+        EnclosedPorch + `3SsnPorch` + ScreenPorch + PoolArea + ns(MoSold, 5) +
+        YrSold + SaleType + SaleCondition + Alley,
+    Gamma(link = log),
+    data = boston
+)
+as_tibble(cbind(noout = coef(m1), out = coef(m1_with_out)), rownames = "vars") %>%
+    mutate(diff = out - noout) %>%
+    arrange(desc(abs(diff)))
+
+```
 THe first step, however is to determine which variables actually matter.
+
 
 
 # Lasso
@@ -264,7 +294,7 @@ mf <- model.frame(
         LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 +
         BldgType + HouseStyle + ns(OverallQual, 5) + ns(OverallCond, 3) +
         ns(YearBuilt, 5) +
-        YearRemodAdd + RoofStyle + RoofMatl + Exterior1st + Exterior2nd +
+        YearRemodAdd + RoofStyle + Exterior1st + Exterior2nd +
         ExterQual + ExterCond + Foundation + BsmtFinSF1 + BsmtFinSF2 +
         BsmtUnfSF + TotalBsmtSF + Heating + HeatingQC + CentralAir +
         `1stFlrSF` + `2ndFlrSF` + LowQualFinSF +
@@ -355,7 +385,7 @@ m3 <- rpart(
         LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 +
         BldgType + HouseStyle + OverallQual + OverallCond +
         YearBuilt +
-        YearRemodAdd + RoofStyle + RoofMatl + Exterior1st + Exterior2nd +
+        YearRemodAdd + RoofStyle + Exterior1st + Exterior2nd +
         ExterQual + ExterCond + Foundation + BsmtFinSF1 + BsmtFinSF2 +
         BsmtUnfSF + TotalBsmtSF + Heating + HeatingQC + CentralAir +
         `1stFlrSF` + `2ndFlrSF` + LowQualFinSF +
@@ -371,7 +401,7 @@ m3 <- rpart(
 
 
 test_res3 <- boston_test %>%
-    filter(!RoofMatl %in% c("ClyTile", "Metal"), !HeatingQC %in% "Po") %>%
+    filter(!HeatingQC %in% "Po") %>%
     mutate(
         SalePrice_pred = predict(m3, .),
         err_base = SalePrice - mean(boston$SalePrice),
@@ -496,7 +526,8 @@ m5 <- gam(
                     x
                 )
             }
-        )
+        ),
+    select = TRUE
 )
 
 summary(m5)
@@ -732,22 +763,40 @@ splines everywhere.
 
 ```{R}
 m6 <- glm(
-    SalePrice ~ ns(OverallQual, 3) + ns(log(GrLivArea + 1), 5) + ns(log(TotalBsmtSF + 1), 5) +
-    ns(YearBuilt, 5) + ns(log(`1stFlrSF` + 1), 5) + ns(GarageCars, 5) + ns(GarageArea,
-    5) + ExterQual + ns(YearRemodAdd, 5) + KitchenQual +
-    ns(log(`2ndFlrSF` + 1), 5) + ns(FullBath, 5) + ns(BsmtFinSF1, 5) + ns(TotRmsAbvGrd, 5) +
-    ns(log(LotArea + 1), 5) + 
-    TotRmsAbvGrd + Neighborhood + Fireplaces + GarageType + HeatingQC +
-    Foundation + HouseStyle,
+    SalePrice ~ MSSubClass + MSZoning +
+        ns(LotArea, 5) + LotShape + LandContour +
+        LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 +
+        BldgType + HouseStyle + ns(OverallQual, 5) + ns(OverallCond, 3) +
+        ns(YearBuilt, 5) +
+        YearRemodAdd + RoofStyle + Exterior1st + Exterior2nd +
+        ExterQual + ExterCond + Foundation + BsmtFinSF1 + BsmtFinSF2 +
+        BsmtUnfSF + TotalBsmtSF + Heating + HeatingQC + CentralAir +
+        `1stFlrSF` + `2ndFlrSF` + LowQualFinSF +
+        ns(GrLivArea, 5) + BsmtFullBath +
+        BsmtHalfBath + FullBath + HalfBath + BedroomAbvGr + KitchenAbvGr +
+        KitchenQual + TotRmsAbvGrd + Functional + Fireplaces + GarageType +
+        GarageCars + ns(GarageArea, 5) +
+        PavedDrive + WoodDeckSF + OpenPorchSF +
+        EnclosedPorch + `3SsnPorch` + ScreenPorch + PoolArea + ns(MoSold, 5) +
+        YrSold + SaleType + SaleCondition + Alley,
+
+    # SalePrice ~ ns(OverallQual, 3) + ns(log(GrLivArea + 1), 5) + ns(log(TotalBsmtSF + 1), 5) +
+    # ns(YearBuilt, 5) + ns(log(`1stFlrSF` + 1), 5) + ns(GarageCars, 5) + ns(GarageArea,
+    # 5) + ExterQual + ns(YearRemodAdd, 5) + KitchenQual +
+    # ns(log(`2ndFlrSF` + 1), 5) + ns(FullBath, 5) + ns(BsmtFinSF1, 5) + ns(TotRmsAbvGrd, 5) +
+    # ns(log(LotArea + 1), 5) + 
+    # TotRmsAbvGrd + Neighborhood + Fireplaces + GarageType + HeatingQC +
+    # Foundation + HouseStyle,
+
+
     # SalePrice ~ OverallQual + GrLivArea + TotalBsmtSF +
     # YearBuilt + `1stFlrSF` + GarageCars + GarageArea + ExterQual +
     # YearRemodAdd + KitchenQual + `2ndFlrSF` + FullBath + BsmtFinSF1 +
     # TotRmsAbvGrd + LotArea,
+
     Gamma(link = log),
     data = boston,
-    subset = !(
-        SalePrice > 6e5 | `1stFlrSF` > 2500 | TotalBsmtSF > 3000 | LotArea > 50e3
-    )
+    #subset = !()
 )
 
 summary(m6)
@@ -755,15 +804,15 @@ summary(m6)
 
 ```{r}
 test_res6 <- boston_test %>%
-    select(Id, SalePrice, all_of(top15)) %>%
-    # filter(!(SalePrice > 6e5 | `1stFlrSF` > 2500 | TotalBsmtSF > 3000 | LotArea > 50e3)) %>%
+    filter(!outlier) %>%
+    #filter(!RoofMatl %in% c("ClyTile", "Metal"), !HeatingQC %in% "Po") %>%
+    # select(Id, SalePrice, all_of(top15)) %>%
     mutate(
         SalePrice_pred = predict(m6, ., type = "response"),
         err_base = SalePrice - mean(boston$SalePrice),
         err = SalePrice - SalePrice_pred,
         .before = everything()
-    ) %>%
-    filter(err >= -200e3)
+    ) 
 
 1 - var(test_res6$err) / var(test_res6$err_base)
 test_res6$err %>% sd()
@@ -794,6 +843,66 @@ test_res6 %>%
     geom_smooth() +
     geom_hline(yintercept = 0)
 ```
+
+
+```{R}
+m7 <- ranger(
+    SalePrice ~ OverallQual + GrLivArea + TotalBsmtSF +
+        YearBuilt + Var_1stFlrSF + GarageCars + GarageArea + ExterQual +
+        YearRemodAdd + KitchenQual + Var_2ndFlrSF + FullBath + BsmtFinSF1 +
+        TotRmsAbvGrd + LotArea,
+    data = boston %>%
+        rename_at(
+            .vars = c("1stFlrSF", "2ndFlrSF", "3SsnPorch"),
+            .funs = ~ paste0("Var_", .)
+        )
+)
+
+summary(m7)
+```
+
+```{r}
+test_res6 <- boston_test %>%
+    filter(!outlier) %>%
+    # select(Id, SalePrice, all_of(top15)) %>%
+    mutate(
+        SalePrice_pred = predict(m6, ., type = "response"),
+        err_base = SalePrice - mean(boston$SalePrice),
+        err = SalePrice - SalePrice_pred,
+        .before = everything()
+    ) 
+
+1 - var(test_res6$err) / var(test_res6$err_base)
+test_res6$err %>% sd()
+test_res6$err_base %>% sd()
+test_res6$err %>% summary()
+test_res6$err_base %>% summary()
+
+# Mean err plot
+test_res6 %>%
+    ggplot() +
+    aes(x = err) +
+    geom_histogram() +
+    geom_vline(xintercept = 0)
+
+# Mean err plot
+test_res6 %>%
+    ggplot() +
+    aes(y = err, x = SalePrice_pred) +
+    geom_point() +
+    geom_smooth() +
+    geom_hline(yintercept = 0)
+
+# err sd plot
+test_res6 %>%
+    ggplot() +
+    aes(y = sqrt(abs(err)), x = SalePrice_pred) +
+    geom_point() +
+    geom_smooth() +
+    geom_hline(yintercept = 0)
+```
+
+
 # Outliers
 
 ```{r}
